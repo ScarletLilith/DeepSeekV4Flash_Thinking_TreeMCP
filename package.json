@@ -34,17 +34,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/ScarletLilith/meditatorMCP.git"
   },
   "bugs": {
-    "url": ""
+    "url": "https://github.com/ScarletLilith/meditatorMCP/issues"
   },
-  "homepage": "",
+  "homepage": "https://github.com/ScarletLilith/meditatorMCP",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.8.0",
     "node-fetch": "^2.7.0",
-    "openai": "^6.44.0",
-    "zod": "^4.4.3"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
