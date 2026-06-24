@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Sensitive / local-only resources
+.test_resources/
+experiments/
+*.env
+.env*
+
+# IDE
+.vscode/
+.idea/
