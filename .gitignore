@@ -1,6 +1,7 @@
 node_modules/
 dist/
 test/config.json
+test/config.*.json
 results/
 *.log
 .env

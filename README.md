@@ -320,6 +320,41 @@ npm run dev
 
 ---
 
+## Benchmark: MCP Tools Impact on Output Quality
+
+We conducted a controlled experiment comparing **3 approaches** across **5 challenging engineering problems** (distributed consensus, service mesh, RTOS kernel, columnar storage engine, multi-modal AI agent framework).
+
+### Test Groups
+
+| Group | Model | API | Tools |
+|:-----:|-------|:---:|:-----:|
+| **A** | GLM-5.2 | SiliconFlow | None |
+| **B** | DeepSeek-V4-Flash | DeepSeek Official | chat_agent + create_branch |
+| **C** | DeepSeek-V4-Flash | DeepSeek Official | None |
+
+### Key Results
+
+| Metric | A (GLM-5.2) | B (DS + Tools) | C (DS Pure) |
+|--------|:-----------:|:--------------:|:-----------:|
+| **Total Output** | 38,888 chars | **169,484 chars** 🏆 | 57,565 chars |
+| **Total Time** | 705s | 1,516s | **239s** 🏆 |
+| **Total Tokens** | 28,459 | 210,482 | 29,184 |
+| **Total Cost** | ¥0.75 | ¥0.91 | **¥0.41** 🏆 |
+| **Avg Output/Question** | 7,778 chars | **33,897 chars** (4.4x) 🏆 | 11,513 chars |
+| **Tool Calls** | 0 | **30** 🏆 | 0 |
+| **Cache Hit Rate** | 0% | **up to 68%** 🏆 | 0% |
+
+### What We Found
+
+- **With MCP tools, DeepSeek-V4-Flash produced 4.4x more detailed engineering solutions** — including complete Go-style Raft consensus implementations, assembly-level RTOS scheduler code, and production-ready service mesh configurations
+- **Tree-structured thinking** (`create_branch`) enabled the model to explore 5-6 levels deep on complex problems, creating subtrees for architecture, implementation, testing, and verification
+- **Cost comparison**: GLM-5.2 costs **13x more** than DeepSeek-V4-Flash pure thinking mode for comparable output quality. With tools enabled, DeepSeek-V4-Flash's cost increased due to deeper exploration, but still remained lower than GLM-5.2
+- **Cache hit rates** reached 68% during multi-round tool calls, dramatically reducing effective input costs via DeepSeek's prefix caching
+
+> Full experiment results and data: [`results/comparison/report.md`](results/comparison/report.md)
+
+---
+
 ## License
 
 [MIT](LICENSE)
