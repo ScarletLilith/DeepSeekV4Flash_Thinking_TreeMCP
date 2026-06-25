@@ -238,7 +238,7 @@ DeepSeek 官方: (3355×$0.14 + 4578×$0.28)/1M = $0.00047 + $0.00128 = $0.00175
 # {
 #   "baseUrl": "https://api.siliconflow.cn/v1",
 #   "model": "zai-org/GLM-5.2",
-#   "apiKey": "sk-pqhlntxqypmihqexmnfcjbzygsdgmsjitmspelnhyqbnenvl"
+#   "apiKey": "sk-your-siliconflow-api-key"
 # }
 cp config.sf.json config.json
 
@@ -247,7 +247,7 @@ cp config.sf.json config.json
 # {
 #   "baseUrl": "https://api.deepseek.com",
 #   "model": "deepseek-v4-flash",
-#   "apiKey": "sk-149bf5a8cc3a43538d0d04443077da33"
+#   "apiKey": "sk-your-deepseek-api-key"
 # }
 cp config.ds.json config.json
 ```
