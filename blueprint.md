@@ -52,7 +52,7 @@
 │               ▼                                               │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  DeepSeek API / SiliconFlow API (OpenAI 兼容格式)      │  │
-│  │  思考模型 -> deepseek-v4-pro (thinking mode)           │  │
+│  │  思考模型 -> deepseek-v4-pro (thinking mode, 推荐)    │  │
 │  │  工具模型 -> deepseek-v4-flash (non-thinking)          │  │
 │  │  参数透传: temperature, top_p, max_tokens              │  │
 │  └────────────────────────────────────────────────────────┘  │
