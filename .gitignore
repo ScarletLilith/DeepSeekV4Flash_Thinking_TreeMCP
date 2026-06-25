@@ -4,3 +4,4 @@ test/config.json
 results/
 *.log
 .env
+.vscode/

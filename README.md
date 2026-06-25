@@ -50,7 +50,7 @@ SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V4-Flash
 | `temperature` | number | 0.7 | 采样温度 0.0-2.0。低=确定/精确，高=创造/发散 |
 | `top_p` | number | 0.9 | 核采样阈值 0.0-1.0 |
 | `max_tokens` | number | 4096 | 最大输出 token 数（API 级控制） |
-| `stop` | string[] | ["\n\n"] | 停止序列 |
+| `stop` | string[] | [] | 停止序列。默认为空数组，不限停止符，由模型自然完成输出 |
 | `seed` | number | 无 | 随机种子，配合低 temperature 实现输出复现 |
 
 ### 参数协同策略

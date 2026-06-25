@@ -7,7 +7,14 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { chatAgentTool, handleChatAgentCall } from "./chatAgentTool.js";
+import {
+  chatAgentTool,
+  createBranchTool,
+  getBranchDetailsTool,
+  handleChatAgentCall,
+  handleCreateBranchCall,
+  handleGetBranchDetailsCall,
+} from "./chatAgentTool.js";
 
 // Create MCP Server
 const server = new Server(
@@ -24,7 +31,7 @@ const server = new Server(
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [chatAgentTool],
+  tools: [chatAgentTool, createBranchTool, getBranchDetailsTool],
 }));
 
 // Handle tool calls
@@ -34,6 +41,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (name) {
     case "chat_agent": {
       return await handleChatAgentCall(args as any);
+    }
+    case "create_branch": {
+      return await handleCreateBranchCall(args as any);
+    }
+    case "get_branch_details": {
+      return await handleGetBranchDetailsCall(args as any);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

@@ -48,7 +48,7 @@ const TOOL_DEF = {
         temperature: { type: "number", default: 0.7, description: "0.0-2.0 低=确定，高=发散" },
         top_p: { type: "number", default: 0.9, description: "0.0-1.0 核采样阈值" },
         max_tokens: { type: "number", default: 4096, description: "最大输出 token 数" },
-        stop: { type: "array", items: { type: "string" }, default: ["\n\n"], description: "停止序列" },
+        stop: { type: "array", items: { type: "string" }, default: [], description: "停止序列，默认空数组" },
         seed: { type: "number", description: "随机种子，低 temperature 下可复现输出" },
       },
       required: ["input_text"],
@@ -185,7 +185,7 @@ async function executeTool(args: any, label = ""): Promise<string> {
     temperature = 0.7,
     top_p = 0.9,
     max_tokens = 4096,
-    stop = ["\n\n"],
+    stop = [],
     seed,
   } = args;
 
@@ -202,8 +202,10 @@ async function executeTool(args: any, label = ""): Promise<string> {
     temperature,
     max_tokens,
     top_p,
-    stop,
   };
+  if (stop.length > 0) {
+    body.stop = stop;
+  }
   if (seed !== undefined) {
     body.seed = seed;
   }
@@ -408,7 +410,7 @@ chat_agent 调用独立、非思考模型执行子任务。你需要构建一个
 参数说明：
 - **system_prompt**：可选，用于设定工具模型的角色（如"你是一个严谨的数学校验员"）
 - **seed**：可选，配合低 temperature 可实现输出复现，适合校验类任务
-- **stop**：默认 ["\n\n"]，防止非思考模型自动续写，可按需覆盖
+- **stop**：可选，默认为空数组不限停止符，模型自然完成输出
 
 当你需要延长思维链时，调用 chat_agent 外包部分推理。
 重要：用户提供的蓝图内容已经直接嵌入在对话中，请直接分析，不要再询问文件路径。`

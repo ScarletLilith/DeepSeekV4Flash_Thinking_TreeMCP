@@ -1,68 +1,22 @@
 import "./polyfill";
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import fetch from "node-fetch";
 import * as fs from "fs";
 import * as path from "path";
+import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "./logger";
+import { nodeStore } from "./nodeStore";
+import { Gatekeeper } from "./gatekeeper";
+import { StrategyEngine } from "./strategyEngine";
+import {
+  ChatAgentArgsSchema,
+  CreateBranchInputSchema,
+  GetBranchDetailsInputSchema,
+  type ChatAgentArgs,
+  type CreateBranchInput,
+  type GetBranchDetailsInput,
+} from "./schemas";
 
-// ─── Tool Schema ───────────────────────────────────────────────
-export const chatAgentTool: Tool = {
-  name: "chat_agent",
-  description: [
-    "调用独立、非思考模式的模型生成文本，用于延伸当前思维链。",
-    "你可以传入任何需要独立完成且不受对话历史影响的子任务，",
-    "包括但不限于：逻辑推理、发散联想、创意生成、优缺点分析、",
-    "情景假设、步骤拆解、知识类比与迁移等。",
-    "请确保 input_text 是一个完整、自包含的任务描述，明确任务类型与目标。",
-    "通过调整 temperature（0~2）和 top_p（0~1）控制输出的确定性与多样性。",
-    "对于需要精确复现的场景（如校验任务），建议设置 temperature 接近 0 并指定 seed。",
-  ].join(""),
-  inputSchema: {
-    type: "object",
-    properties: {
-      input_text: {
-        type: "string",
-        description: [
-            "完整、自包含的任务描述。需明确任务类型（推理/联想/类比/创意/评估等）",
-            "并提供所有必要的上下文信息，使工具无需依赖外部信息即可独立完成任务。",
-            "示例：'推理：已知X=5, Y=12，请推导Z=X²+Y²的值，并给出计算步骤。'",
-          ].join(""),
-      },
-      system_prompt: {
-        type: "string",
-        description: "可选的系统提示词，用于设定角色或行为约束。如：'你是一个严谨的数学校验员，只输出最终结果。'",
-      },
-      temperature: {
-        type: "number",
-        description: "采样温度 0.0-2.0。低值(0.0-0.3)=确定/精确，高值(0.7-2.0)=创造/发散",
-        default: 0.7,
-      },
-      top_p: {
-        type: "number",
-        description: "核采样阈值 0.0-1.0。与temperature配合使用控制输出多样性",
-        default: 0.9,
-      },
-      max_tokens: {
-        type: "number",
-        description: "最大输出token数。通过API参数在服务端控制，非本地硬截断",
-        default: 4096,
-      },
-      stop: {
-        type: "array",
-        items: { type: "string" },
-        description: "停止序列，遇到这些字符串时停止生成。默认 ['\\n\\n'] 防止非思考模型自动续写，思考模型可按需覆盖",
-        default: ["\n\n"],
-      },
-      seed: {
-        type: "number",
-        description: "随机种子（需 API 支持）。设置后配合低 temperature 可实现输出复现",
-      },
-    },
-    required: ["input_text"],
-  },
-};
-
-// ─── Config Loading ────────────────────────────────────────────
+// ─── Shared Config Loading ─────────────────────────────────────
 interface ApiConfig {
   baseUrl: string;
   model: string;
@@ -113,7 +67,6 @@ function classifyFetchError(error: any, statusCode?: number): ClassifiedError {
   const code = error?.code || "";
   const msg = error?.message || String(error);
 
-  // 网络连接类错误 — 快速失败，让思考模型决定是否重试
   if (code === "ENOTFOUND") {
     return { type: "network", action: "retry", message: `DNS 解析失败，请检查 API 地址配置: ${msg}`, status_code: 0 };
   }
@@ -130,7 +83,6 @@ function classifyFetchError(error: any, statusCode?: number): ClassifiedError {
     return { type: "network", action: "retry", message: `网络连接超时，请检查网络或稍后重试: ${msg}`, status_code: 0 };
   }
 
-  // HTTP 状态码类错误
   if (statusCode) {
     if (statusCode === 429) {
       return { type: "api", action: "backoff", message: `API 请求过于频繁(429)，请降低调用频率后重试`, status_code: 429 };
@@ -149,77 +101,21 @@ function classifyFetchError(error: any, statusCode?: number): ClassifiedError {
   return { type: "unknown", action: "report", message: msg, status_code: statusCode || 0 };
 }
 
-// ─── Input Validation ──────────────────────────────────────────
-const MAX_INPUT_LENGTH = 100000; // 约 100K 字符，防止 context overflow
-const MAX_INPUT_WARN_LENGTH = 80000;
-
-interface ValidationResult {
-  valid: boolean;
-  input_text: string;
-  temperature: number;
-  top_p: number;
-  max_tokens: number;
-  stop: string[];
-  errors: string[];
-  warnings: string[];
-}
-
-function validateArgs(args: ChatAgentArgs): ValidationResult {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-
-  // input_text 非空校验
-  let text = args.input_text || "";
-  if (!text.trim()) {
-    errors.push("input_text 不能为空");
-  }
-
-  // 超长截断
-  if (text.length > MAX_INPUT_LENGTH) {
-    warnings.push(`input_text 过长(${text.length}字符)，截断至 ${MAX_INPUT_LENGTH} 字符`);
-    text = text.substring(0, MAX_INPUT_LENGTH);
-  } else if (text.length > MAX_INPUT_WARN_LENGTH) {
-    warnings.push(`input_text 较长(${text.length}字符)，注意模型上下文窗口限制`);
-  }
-
-  // 参数钳制
-  const temp = args.temperature ?? 0.7;
-  const clampedTemp = Math.max(0, Math.min(2, temp));
-  if (temp !== clampedTemp) {
-    warnings.push(`temperature ${temp} 超出范围 [0,2]，已钳制为 ${clampedTemp}`);
-  }
-
-  const topP = args.top_p ?? 0.9;
-  const clampedTopP = Math.max(0, Math.min(1, topP));
-  if (topP !== clampedTopP) {
-    warnings.push(`top_p ${topP} 超出范围 [0,1]，已钳制为 ${clampedTopP}`);
-  }
-
-  const maxTokens = args.max_tokens ?? 4096;
-  const clampedMaxTokens = Math.max(1, Math.min(384000, maxTokens));
-  if (maxTokens !== clampedMaxTokens) {
-    warnings.push(`max_tokens ${maxTokens} 超出范围 [1,384000]，已钳制为 ${clampedMaxTokens}`);
-  }
-
-  return {
-    valid: errors.length === 0,
-    input_text: text,
-    temperature: clampedTemp,
-    top_p: clampedTopP,
-    max_tokens: clampedMaxTokens,
-    stop: args.stop ?? ["\n\n"],
-    errors,
-    warnings,
-  };
-}
-
 // ─── Retry Call ────────────────────────────────────────────────
+interface ApiCallResult {
+  success: boolean;
+  data?: any;
+  classified?: ClassifiedError;
+  error?: string;
+  status_code?: number;
+}
+
 async function callApiWithRetry(
   apiUrl: string,
   body: any,
   apiKey: string,
   requestId: string
-): Promise<any> {
+): Promise<ApiCallResult> {
   const log = logger.withId(requestId);
   const maxRetries = 3;
 
@@ -244,7 +140,6 @@ async function callApiWithRetry(
         const classified = classifyFetchError(null, response.status);
         const errMsg = data.error?.message || data.error || `HTTP ${response.status}`;
 
-        // 只在 429 / 5xx 时重试
         const shouldRetry = (response.status === 429 || response.status >= 500) && attempt < maxRetries;
         if (shouldRetry) {
           const delay = computeBackoff(attempt, response.status, data);
@@ -253,8 +148,7 @@ async function callApiWithRetry(
           continue;
         }
 
-        // 不可重试的错误，直接返回
-        return { success: false, classified, error: errMsg, status_code: response.status, data };
+        return { success: false, classified, error: errMsg, status_code: response.status };
       }
 
       log.info("API call succeeded", {
@@ -268,7 +162,6 @@ async function callApiWithRetry(
     } catch (error: any) {
       const classified = classifyFetchError(error);
 
-      // 网络类错误在 Server 侧不自动重试，交由思考模型决策
       if (classified.type === "network" || attempt >= maxRetries) {
         log.error(`API call failed permanently`, {
           type: classified.type,
@@ -277,7 +170,7 @@ async function callApiWithRetry(
           attempt,
           maxRetries,
         });
-        return { success: false, classified, error: classified.message, status_code: 0, data: null };
+        return { success: false, classified, error: classified.message, status_code: 0 };
       }
 
       const delay = computeBackoff(attempt, 0, null);
@@ -286,15 +179,13 @@ async function callApiWithRetry(
     }
   }
 
-  return { success: false, classified: { type: "unknown", action: "report", message: "所有重试均失败", status_code: 0 }, error: "所有重试均失败", status_code: 0, data: null };
+  return { success: false, classified: { type: "unknown", action: "report", message: "所有重试均失败", status_code: 0 }, error: "所有重试均失败", status_code: 0 };
 }
 
 function computeBackoff(attempt: number, statusCode: number, responseData: any): number {
-  // 优先使用服务端返回的 Retry-After
   if (statusCode === 429 && responseData?.error?.retry_after) {
     return responseData.error.retry_after * 1000;
   }
-  // 指数退避：1s, 3s, 7s
   return Math.min(1000 * (Math.pow(2, attempt) - 1), 10000);
 }
 
@@ -302,86 +193,170 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ─── Direct API Call ───────────────────────────────────────────
-interface ChatAgentArgs {
-  input_text: string;
-  system_prompt?: string;
-  temperature?: number;
-  top_p?: number;
-  max_tokens?: number;
-  stop?: string[];
-  seed?: number;
+// ─── Tool Schemas ──────────────────────────────────────────────
+export const chatAgentTool: Tool = {
+  name: "chat_agent",
+  description: [
+    "调用独立、非思考模式的模型生成文本，用于延伸当前思维链。",
+    "你可以传入任何需要独立完成且不受对话历史影响的子任务，",
+    "包括但不限于：逻辑推理、发散联想、创意生成、优缺点分析、",
+    "情景假设、步骤拆解、知识类比与迁移等。",
+    "请确保 input_text 是一个完整、自包含的任务描述，明确任务类型与目标。",
+    "通过调整 temperature（0~2）和 top_p（0~1）控制输出的确定性与多样性。",
+    "对于需要精确复现的场景（如校验任务），建议设置 temperature 接近 0 并指定 seed。",
+  ].join(""),
+  inputSchema: {
+    type: "object",
+    properties: {
+      input_text: {
+        type: "string",
+        description: [
+          "完整、自包含的任务描述。需明确任务类型（推理/联想/类比/创意/评估等）",
+          "并提供所有必要的上下文信息，使工具无需依赖外部信息即可独立完成任务。",
+          "示例：'推理：已知X=5, Y=12，请推导Z=X²+Y²的值，并给出计算步骤。'",
+        ].join(""),
+      },
+      system_prompt: {
+        type: "string",
+        description: "可选的系统提示词，用于设定角色或行为约束。如：'你是一个严谨的数学校验员，只输出最终结果。'",
+      },
+      temperature: {
+        type: "number",
+        description: "采样温度 0.0-2.0。低值(0.0-0.3)=确定/精确，高值(0.7-2.0)=创造/发散",
+        default: 0.7,
+      },
+      top_p: {
+        type: "number",
+        description: "核采样阈值 0.0-1.0。与temperature配合使用控制输出多样性",
+        default: 0.9,
+      },
+      max_tokens: {
+        type: "number",
+        description: "最大输出token数。通过API参数在服务端控制，非本地硬截断",
+        default: 4096,
+      },
+      stop: {
+        type: "array",
+        items: { type: "string" },
+        description: "停止序列，遇到这些字符串时停止生成。默认空数组不限停止符，由模型自然完成输出",
+        default: [],
+      },
+      seed: {
+        type: "number",
+        description: "随机种子（需 API 支持）。设置后配合低 temperature 可实现输出复现",
+      },
+    },
+    required: ["input_text"],
+  },
+};
+
+export const createBranchTool: Tool = {
+  name: "create_branch",
+  description: [
+    "在主干推理中向外生成思维分支。工具将执行外部推理，但仅返回精炼结论，不返回过程，以保护你的上下文。",
+    "当你遇到局部的、自包含的子问题（如验证、发散、深入拆解、临时备忘）时使用。",
+  ].join(""),
+  inputSchema: {
+    type: "object",
+    properties: {
+      session_id: {
+        type: "string",
+        description: "当前会话ID，用于区分不同思维树上下文",
+      },
+      input_text: {
+        type: "string",
+        minLength: 30,
+        description: "具体、自包含的子问题描述，需包含足够上下文使工具可独立完成",
+      },
+      call_type: {
+        type: "string",
+        enum: ["drill_down", "verify", "explore", "stash"],
+        description: "探索类型：drill_down(深入)/verify(验证)/explore(发散)/stash(备忘)",
+        default: "drill_down",
+      },
+      parent_node_id: {
+        type: "string",
+        description: "父节点ID，若直接挂载于树干则使用 'trunk'",
+        default: "trunk",
+      },
+    },
+    required: ["session_id", "input_text"],
+  },
+};
+
+export const getBranchDetailsTool: Tool = {
+  name: "get_branch_details",
+  description: [
+    "当你对某个分支的结论存疑，需要查看其具体推导过程时调用此工具。",
+    "工具将返回该节点内部模型的完整原始推理过程，不会污染主干上下文。",
+  ].join(""),
+  inputSchema: {
+    type: "object",
+    properties: {
+      session_id: {
+        type: "string",
+        description: "当前会话ID",
+      },
+      node_id: {
+        type: "string",
+        description: "之前 create_branch 返回的分支节点ID",
+      },
+    },
+    required: ["session_id", "node_id"],
+  },
+};
+
+// ─── Shared Helpers ────────────────────────────────────────────
+function makeErrorResponse(type: string, action: string, message: string, extra?: Record<string, any>) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ success: false, type, action, message, ...extra }) }],
+    isError: true,
+  };
 }
 
+function generateRequestId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "req_";
+  for (let i = 0; i < 12; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
+const BRANCH_SYSTEM_PROMPT = `你是一个外部思维节点生成器。针对用户提出的局部子问题，进行独立分析。
+请严格按照以下格式输出：
+
+[分析过程]
+（在此处输出你完整的推理过程，保持逻辑严密。）
+
+[最终结论]
+（在此处输出结论。要求：语义完整，不可出现半句截断的话，直接给主模型可用的判断或素材，不要废话。）`;
+
+const gatekeeper = new Gatekeeper(nodeStore);
+
+// ─── chat_agent handler ────────────────────────────────────────
 export async function handleChatAgentCall(args: ChatAgentArgs) {
   const requestId = generateRequestId();
   const log = logger.withId(requestId);
 
-  log.info("chat_agent called", { input_length: args.input_text?.length });
-
-  // ── Step 1: 输入校验 ──
-  const validated = validateArgs(args);
-  for (const w of validated.warnings) {
-    log.warn(w);
-  }
-  if (!validated.valid) {
-    log.error("Input validation failed", { errors: validated.errors });
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            success: false,
-            type: "validation",
-            action: "fix_input",
-            errors: validated.errors,
-            message: validated.errors.join("; "),
-          }),
-        },
-      ],
-      isError: true,
-    };
+  const parsed = ChatAgentArgsSchema.safeParse(args);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    log.error("Input validation failed", { errors: issues });
+    return makeErrorResponse("validation", "fix_input", issues.join("; "), { errors: issues });
   }
 
-  // 校验过程中的截断需要记录
-  if (validated.input_text !== args.input_text) {
-    log.warn("input_text was truncated", {
-      original: args.input_text.length,
-      truncated: validated.input_text.length,
-    });
-  }
+  const validated = parsed.data;
+  log.info("chat_agent called", { input_length: validated.input_text.length });
 
-  // ── Step 2: 加载配置 ──
   let config: ApiConfig;
   try {
     config = loadConfig();
   } catch (e: any) {
     log.error("Config load failed", { error: e.message });
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            success: false,
-            type: "config",
-            action: "report",
-            message: e.message,
-          }),
-        },
-      ],
-      isError: true,
-    };
+    return makeErrorResponse("config", "report", e.message);
   }
 
-  log.info("Config loaded", { model: config.model, baseUrl: config.baseUrl.replace(/\/+$/, "") });
-
-  // ── Step 3: 组装请求 ──
-  const systemPrompt = args.system_prompt;
-  const messages: any[] = systemPrompt
-    ? [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: validated.input_text },
-      ]
+  const messages: any[] = validated.system_prompt
+    ? [{ role: "system", content: validated.system_prompt }, { role: "user", content: validated.input_text }]
     : [{ role: "user", content: validated.input_text }];
 
   const body: any = {
@@ -390,82 +365,146 @@ export async function handleChatAgentCall(args: ChatAgentArgs) {
     temperature: validated.temperature,
     max_tokens: validated.max_tokens,
     top_p: validated.top_p,
-    stop: validated.stop,
   };
-
-  if (args.seed !== undefined) {
-    body.seed = args.seed;
+  if (validated.stop.length > 0) {
+    body.stop = validated.stop;
   }
+  if (validated.seed !== undefined) body.seed = validated.seed;
 
   const apiUrl = config.baseUrl.replace(/\/+$/, "") + "/chat/completions";
-
-  // ── Step 4: 发起 API 调用（含重试） ──
   const result = await callApiWithRetry(apiUrl, body, config.apiKey, requestId);
 
   if (!result.success) {
-    log.error("Tool execution failed", {
-      type: result.classified.type,
-      action: result.classified.action,
+    log.error("Tool execution failed", { type: result.classified!.type, action: result.classified!.action, error: result.error, status_code: result.status_code });
+    return makeErrorResponse(result.classified!.type, result.classified!.action, result.classified!.message, {
       error: result.error,
       status_code: result.status_code,
     });
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            success: false,
-            type: result.classified.type,
-            action: result.classified.action,
-            error: result.error,
-            status_code: result.status_code,
-            message: result.classified.message,
-          }),
-        },
-      ],
-      isError: true,
-    };
   }
 
-  // ── Step 5: 成功返回 ──
   const choice = result.data.choices?.[0];
   const content = choice?.message?.content || "";
   const finishReason = choice?.finish_reason || "unknown";
 
-  log.info("Tool execution succeeded", {
-    finish_reason: finishReason,
-    output_length: content.length,
-  });
+  log.info("Tool execution succeeded", { finish_reason: finishReason, output_length: content.length });
 
   return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          success: true,
-          content,
-          finish_reason: finishReason,
-          usage: result.data.usage
-            ? {
-                prompt_tokens: result.data.usage.prompt_tokens,
-                completion_tokens: result.data.usage.completion_tokens,
-                total_tokens: result.data.usage.total_tokens,
-              }
-            : null,
-          model: result.data.model,
-        }),
-      },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify({
+      success: true, content, finish_reason: finishReason,
+      usage: result.data.usage ? { prompt_tokens: result.data.usage.prompt_tokens, completion_tokens: result.data.usage.completion_tokens, total_tokens: result.data.usage.total_tokens } : null,
+      model: result.data.model,
+    }) }],
   };
 }
 
-// ─── Helpers ───────────────────────────────────────────────────
-function generateRequestId(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let id = "req_";
-  for (let i = 0; i < 12; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+// ─── create_branch handler ─────────────────────────────────────
+export async function handleCreateBranchCall(args: CreateBranchInput) {
+  const requestId = generateRequestId();
+  const log = logger.withId(requestId);
+
+  const parsed = CreateBranchInputSchema.safeParse(args);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    log.error("create_branch input validation failed", { errors: issues });
+    return makeErrorResponse("validation", "fix_input", issues.join("; "), { errors: issues });
   }
-  return id;
+
+  const input = parsed.data;
+  log.info("create_branch called", {
+    session_id: input.session_id,
+    call_type: input.call_type,
+    parent_node_id: input.parent_node_id,
+    input_length: input.input_text.length,
+  });
+
+  const gate = gatekeeper.validateCreate(input);
+  if (!gate.valid) {
+    log.warn("create_branch gatekeeper rejected", { reason: gate.reason });
+    return makeErrorResponse("validation", "fix_input", gate.reason!);
+  }
+
+  let config: ApiConfig;
+  try {
+    config = loadConfig();
+  } catch (e: any) {
+    log.error("Config load failed", { error: e.message });
+    return makeErrorResponse("config", "report", e.message);
+  }
+
+  const params = StrategyEngine.getParams(input.call_type);
+  const body: any = {
+    model: config.model,
+    messages: [
+      { role: "system", content: BRANCH_SYSTEM_PROMPT },
+      { role: "user", content: input.input_text },
+    ],
+    temperature: params.temperature,
+    top_p: params.top_p,
+    max_tokens: params.max_tokens,
+  };
+
+  const apiUrl = config.baseUrl.replace(/\/+$/, "") + "/chat/completions";
+  const result = await callApiWithRetry(apiUrl, body, config.apiKey, requestId);
+
+  if (!result.success) {
+    log.error("create_branch failed", { type: result.classified!.type, action: result.classified!.action, error: result.error, status_code: result.status_code });
+    return makeErrorResponse(result.classified!.type, result.classified!.action, result.classified!.message, {
+      error: result.error,
+      status_code: result.status_code,
+    });
+  }
+
+  const rawResponse = result.data.choices?.[0]?.message?.content || "";
+  const node = nodeStore.addNode(
+    input.session_id,
+    input.parent_node_id,
+    input.call_type,
+    input.input_text,
+    rawResponse
+  );
+
+  log.info("create_branch succeeded", {
+    node_id: node.node_id,
+    conclusion_length: node.conclusion.length,
+    raw_length: node.raw_process.length,
+  });
+
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({
+      status: "success",
+      node_id: node.node_id,
+      conclusion: node.conclusion,
+      confidence: node.confidence,
+    }) }],
+  };
+}
+
+// ─── get_branch_details handler ────────────────────────────────
+export async function handleGetBranchDetailsCall(args: GetBranchDetailsInput) {
+  const requestId = generateRequestId();
+  const log = logger.withId(requestId);
+
+  const parsed = GetBranchDetailsInputSchema.safeParse(args);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    log.error("get_branch_details input validation failed", { errors: issues });
+    return makeErrorResponse("validation", "fix_input", issues.join("; "), { errors: issues });
+  }
+
+  const { session_id, node_id } = parsed.data;
+  log.info("get_branch_details called", { session_id, node_id });
+
+  const node = nodeStore.getNode(session_id, node_id);
+  if (!node) {
+    log.warn("Node not found", { session_id, node_id });
+    return makeErrorResponse("not_found", "report", "Node not found.", { session_id, node_id });
+  }
+
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({
+      status: "success",
+      node_id: node.node_id,
+      raw_process: node.raw_process,
+    }) }],
+  };
 }

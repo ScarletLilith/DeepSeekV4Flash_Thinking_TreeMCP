@@ -91,7 +91,7 @@ V2（当前方案）：思考模型构建完整 input_text
 | temperature | number | 0.7 | 0.0-2.0 | 采样温度 |
 | top_p | number | 0.9 | 0.0-1.0 | 核采样 |
 | max_tokens | number | 4096 | 1-384000 | 最大输出 token（API 级控制） |
-| stop | string[] | ["\n\n"] | - | 停止序列。默认值防止非思考模型自动续写，思考模型可按需覆盖 |
+| stop | string[] | [] | - | 停止序列。默认空数组，由模型自然完成输出，不被截断 |
 | seed | number | 无 | - | 随机种子。配合低 temperature 实现输出复现，适合校验场景 |
 
 ### input_text 构建规范
